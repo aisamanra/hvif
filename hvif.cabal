@@ -1,0 +1,23 @@
+name:             hvif
+version:          0.1.0.0
+-- synopsis:
+-- description:
+license:          BSD3
+license-file:     LICENSE
+author:           Getty Ritter <gettylefou@gmail.com>
+maintainer:       Getty Ritter <gettylefou@gmail.com>
+copyright:        ©2016 Getty Ritter
+-- category:
+build-type:       Simple
+cabal-version:    >= 1.12
+
+library
+  exposed-modules:     Graphics.HVIF
+  ghc-options:         -Wall
+  build-depends:       base >=4.7 && <4.9
+                     , bytestring
+                     , cereal
+                     , containers
+  default-language:    Haskell2010
+  default-extensions:  OverloadedStrings,
+                       ScopedTypeVariables
