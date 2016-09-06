@@ -1,11 +1,33 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module Graphics.HVIF where
+module Graphics.HVIF
+(
+-- * Decoding
+  decodeFile
+-- * Types
+, HVIFFile(..)
+-- ** Style Section
+, Style(..)
+, Gradient(..)
+, GradientType(..)
+, GradientFlags(..)
+, GradientStop(..)
+-- ** Paths Section
+, Path(..)
+, PathFlags(..)
+, Point(..)
+, Command(..)
+-- ** Shape Section
+, Shape(..)
+, PathRef(..)
+, StyleRef(..)
+, ShapeFlags(..)
+) where
 
 import           Control.Monad (replicateM, when)
 import           Data.Bits ((.|.), (.&.), clearBit, shift, testBit)
 import           Data.ByteString (ByteString)
-import           Data.Sequence (Seq)
+import           Data.Sequence (Seq, (<|))
 import qualified Data.Sequence as S
 import           Data.Serialize
 import           Data.Word
@@ -18,6 +40,99 @@ data HVIFFile = HVIFFile
 
 decodeFile :: ByteString -> Either String HVIFFile
 decodeFile = runGet pFile
+
+instance Serialize HVIFFile where
+  get = pFile
+  put = error "[unfinished]"
+
+-- Style Section
+
+data Style
+  = ColorSolid Word8 Word8 Word8 Word8
+  | ColorGradient Gradient
+  | ColorSolidNoAlpha Word8 Word8 Word8
+  | ColorSolidGray Word8 Word8
+  | ColorSolidGrayNoAlpha Word8
+    deriving (Eq, Show)
+
+data Gradient = Gradient
+  { gType  :: GradientType
+  , gFlags :: GradientFlags
+  , gStops :: Seq GradientStop
+  } deriving (Eq, Show)
+
+data GradientType
+  = GTLinear
+  | GTCircular
+  | GTDiamond
+  | GTConic
+  | GTXY
+  | GTSqrtXY
+    deriving (Eq, Show)
+
+data GradientFlags = GradientFlags
+  { gfTransform :: Bool
+  , gfNoAlpha   :: Bool
+  , gf16Bit     :: Bool
+  , gfGrays     :: Bool
+  } deriving (Eq, Show)
+
+data GradientStop = GradientStop
+  { gsOffset :: Word8
+  , gsRed    :: Word8
+  , gsGreen  :: Word8
+  , gsBlue   :: Word8
+  , gsAlpha  :: Word8
+  } deriving (Eq, Show)
+
+-- Path Section
+
+data Path = Path
+  { pathFlags  :: PathFlags
+  , pathPoints :: Seq Command
+  } deriving (Eq, Show)
+
+data PathFlags = PathFlags
+  { pfClosed       :: Bool
+  , pfUsesCommands :: Bool
+  , pfNoCurves     :: Bool
+  } deriving (Eq, Show)
+
+data Point = Point
+  { coordX :: Float
+  , coordY :: Float
+  } deriving (Eq, Show)
+
+data Command
+  = CmdHLine Float
+  | CmdVLine Float
+  | CmdLine Point
+  | CmdCurve Point Point Point
+    deriving (Eq, Show)
+
+-- Shape Section
+
+data Shape = Shape
+  { shapeStyle     :: StyleRef
+  , shapePaths     :: Seq PathRef
+  , shapeFlags     :: ShapeFlags
+  , shapeTransform :: Maybe Matrix
+  } deriving (Eq, Show)
+
+type Matrix = Seq Float
+
+newtype PathRef = PathRef { prIdx :: Word8 } deriving (Eq, Show)
+newtype StyleRef = StyleRef { stIdx :: Word8 } deriving (Eq, Show)
+
+data ShapeFlags = ShapeFlags
+  { sfTransform       :: Bool
+  , sfHinting         :: Bool
+  , sfLodScale        :: Bool
+  , sfHasTransformers :: Bool
+  , sfTranslation     :: Bool
+  } deriving (Eq, Show)
+
+-- Decoding code
 
 getSeveral :: Get a -> Get (Seq a)
 getSeveral getter = do
@@ -34,15 +149,7 @@ pFile = do
   hvifShapes <- getSeveral pShape
   return HVIFFile { .. }
 
--- Style Section
-
-data Style
-  = ColorSolid Word8 Word8 Word8 Word8
-  | ColorGradient Gradient
-  | ColorSolidNoAlpha Word8 Word8 Word8
-  | ColorSolidGray Word8 Word8
-  | ColorSolidGrayNoAlpha Word8
-    deriving (Eq, Show)
+-- Style section
 
 pStyle :: Get Style
 pStyle = do
@@ -55,28 +162,12 @@ pStyle = do
     0x05 -> ColorSolidGrayNoAlpha <$> get
     _    -> fail "invalid"
 
-
-data Gradient = Gradient
-  { gType  :: GradientType
-  , gFlags :: GradientFlags
-  , gStops :: Seq GradientStop
-  } deriving (Eq, Show)
-
 pGradient :: Get Gradient
 pGradient = do
   gType  <- pGradientType
   gFlags <- pGradientFlags
   gStops <- getSeveral (pGradientStop gFlags)
   return Gradient { .. }
-
-data GradientType
-  = GTLinear
-  | GTCircular
-  | GTDiamond
-  | GTConic
-  | GTXY
-  | GTSqrtXY
-    deriving (Eq, Show)
 
 pGradientType :: Get GradientType
 pGradientType = do
@@ -90,14 +181,6 @@ pGradientType = do
     05 -> return GTSqrtXY
     _  -> fail ("Unknown gradient type: " ++ show gType)
 
-
-data GradientFlags = GradientFlags
-  { gfTransform :: Bool
-  , gfNoAlpha   :: Bool
-  , gf16Bit     :: Bool
-  , gfGrays     :: Bool
-  } deriving (Eq, Show)
-
 pGradientFlags :: Get GradientFlags
 pGradientFlags = do
   gFlags <- getWord8
@@ -107,14 +190,6 @@ pGradientFlags = do
     , gf16Bit     = testBit gFlags 3
     , gfGrays     = testBit gFlags 4
     }
-
-data GradientStop = GradientStop
-  { gsOffset :: Word8
-  , gsRed    :: Word8
-  , gsGreen  :: Word8
-  , gsBlue   :: Word8
-  , gsAlpha  :: Word8
-  } deriving (Eq, Show)
 
 pGradientStop :: GradientFlags -> Get GradientStop
 pGradientStop flags = do
@@ -135,25 +210,13 @@ pGradientStop flags = do
       else get
   return $ GradientStop offset r g b a
 
-
 -- Path Section
-
-data Path = Path
-  { pathFlags  :: PathFlags
-  , pathPoints :: Seq Command
-  } deriving (Eq, Show)
 
 pPath :: Get Path
 pPath = do
   pathFlags <- pPathFlags
   pathPoints <- pPoints pathFlags
   return Path { .. }
-
-data PathFlags = PathFlags
-  { pfClosed       :: Bool
-  , pfUsesCommands :: Bool
-  , pfNoCurves     :: Bool
-  } deriving (Eq, Show)
 
 pPathFlags :: Get PathFlags
 pPathFlags = do
@@ -163,18 +226,6 @@ pPathFlags = do
     , pfUsesCommands = testBit pFlags 2
     , pfNoCurves     = testBit pFlags 3
     }
-
-data Point = Point
-  { coordX :: Float
-  , coordY :: Float
-  } deriving (Eq, Show)
-
-data Command
-  = CmdHLine Float
-  | CmdVLine Float
-  | CmdLine Point
-  | CmdCurve Point Point Point
-    deriving (Eq, Show)
 
 pPoints :: PathFlags -> Get (Seq Command)
 pPoints PathFlags { pfUsesCommands = False
@@ -206,13 +257,13 @@ pCommandList = do
                 iIdx = (n `mod` 4) * 2
             in case (cmdBytes !! bIdx) `shift` (negate iIdx) .&. 0x03 of
                  0x00 ->
-                   (S.<|) <$> (CmdHLine <$> pCoord) <*> go (n+1)
+                   (<|) <$> (CmdHLine <$> pCoord) <*> go (n+1)
                  0x01 ->
-                   (S.<|) <$> (CmdVLine <$> pCoord) <*> go (n+1)
+                   (<|) <$> (CmdVLine <$> pCoord) <*> go (n+1)
                  0x02 ->
-                   (S.<|) <$> pLineCommand <*> go (n+1)
+                   (<|) <$> pLineCommand <*> go (n+1)
                  0x03 ->
-                   (S.<|) <$> pCurveCommand <*> go (n+1)
+                   (<|) <$> pCurveCommand <*> go (n+1)
                  _ -> error "[unreachable]"
   go 0
 
@@ -225,17 +276,6 @@ pCoord = do
     return (fromIntegral cVal / 102.0 - 128.0)
   else
     return (fromIntegral b1 - 32.0)
-
--- Shape Section
-
-data Shape = Shape
-  { shapeStyle :: StyleRef
-  , shapePaths :: Seq PathRef
-  , shapeFlags :: ShapeFlags
-  , shapeTransform :: Maybe Matrix
-  } deriving (Eq, Show)
-
-type Matrix = Seq Float
 
 pShape :: Get Shape
 pShape = do
@@ -251,17 +291,6 @@ pShape = do
       else return Nothing
   return Shape { .. }
 
-newtype PathRef = PathRef { prIdx :: Word8 } deriving (Eq, Show)
-newtype StyleRef = StyleRef { stIdx :: Word8 } deriving (Eq, Show)
-
-data ShapeFlags = ShapeFlags
-  { sfTransform       :: Bool
-  , sfHinting         :: Bool
-  , sfLodScale        :: Bool
-  , sfHasTransformers :: Bool
-  , sfTranslation     :: Bool
-  } deriving (Eq, Show)
-
 pShapeFlags :: Get ShapeFlags
 pShapeFlags = do
   sFlags <- getWord8
@@ -276,6 +305,7 @@ pShapeFlags = do
 pMatrix :: Get Matrix
 pMatrix = S.fromList `fmap` replicateM 6 pFloat
 
+-- XXX Actually parse 24-bit floats right
 pFloat :: Get Float
 pFloat = do
   _ <- getWord8
