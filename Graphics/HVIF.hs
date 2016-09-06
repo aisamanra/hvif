@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BinaryLiterals #-}
 
 module Graphics.HVIF
 (
@@ -305,10 +306,27 @@ pShapeFlags = do
 pMatrix :: Get Matrix
 pMatrix = S.fromList `fmap` replicateM 6 pFloat
 
--- XXX Actually parse 24-bit floats right
 pFloat :: Get Float
 pFloat = do
-  _ <- getWord8
-  _ <- getWord8
-  _ <- getWord8
-  return 0.0
+  b1 <- fromIntegral <$> getWord8
+  b2 <- fromIntegral <$> getWord8
+  b3 <- fromIntegral <$> getWord8
+  let sVal :: Word32 = (b1 `shift` 16) .|. (b2 `shift` 8) .|. b3
+      sMask = 0b100000000000000000000000 -- == 0x800000
+      eMask = 0b011111100000000000000000 -- == 0x7e0000
+      mMask = 0b000000011111111111111111 -- == 0x01ffff
+      sign =  (sVal .&. sMask) `shift` (-23)
+      expo = ((sVal .&. eMask) `shift` (-17)) - 32
+      mant =  (sVal .&. mMask) `shift` 6
+      val  = (sign `shift` 31) .|. ((expo + 127) `shift` 23) .|. mant
+  if sVal == 0
+    then return 0.0
+    else castToFloat val
+
+
+castToFloat :: Word32 -> Get Float
+castToFloat w32 =
+  let bs = encode w32
+  in case runGet getFloat32be bs of
+    Left err -> fail err
+    Right x  -> return x
