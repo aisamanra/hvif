@@ -21,3 +21,11 @@ library
   default-language:    Haskell2010
   default-extensions:  OverloadedStrings,
                        ScopedTypeVariables
+
+executable hvif2svg
+  hs-source-dirs: hvif2svg
+  main-is: Main.hs
+  build-depends: base >=4.7 && <4.9
+               , hvif
+               , bytestring
+               , containers
