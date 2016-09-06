@@ -3,7 +3,7 @@
 module Graphics.HVIF where
 
 import           Control.Monad (replicateM, when)
-import           Data.Bits ((.|.), clearBit, shift, testBit)
+import           Data.Bits ((.|.), (.&.), clearBit, shift, testBit)
 import           Data.ByteString (ByteString)
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as S
@@ -140,7 +140,7 @@ pGradientStop flags = do
 
 data Path = Path
   { pathFlags  :: PathFlags
-  , pathPoints :: Seq Point
+  , pathPoints :: Seq Command
   } deriving (Eq, Show)
 
 pPath :: Get Path
@@ -169,21 +169,60 @@ data Point = Point
   , coordY :: Float
   } deriving (Eq, Show)
 
-pPoints :: PathFlags -> Get (Seq Point)
-pPoints PathFlags { pfUsesCommands = False } =
-  getSeveral (Point <$> pCoord <*> pCoord)
-pPoints PathFlags { pfUsesCommands = True } = do
-  c1 <- getWord8
-  c2 <- getWord8
-  return $ S.empty
+data Command
+  = CmdHLine Float
+  | CmdVLine Float
+  | CmdLine Point
+  | CmdCurve Point Point Point
+    deriving (Eq, Show)
+
+pPoints :: PathFlags -> Get (Seq Command)
+pPoints PathFlags { pfUsesCommands = False
+                  , pfNoCurves = False } =
+  getSeveral pCurveCommand
+pPoints PathFlags { pfUsesCommands = False
+                  , pfNoCurves = True } =
+  getSeveral pLineCommand
+pPoints PathFlags { pfUsesCommands = True } =
+  pCommandList
+
+pLineCommand :: Get Command
+pLineCommand = CmdLine <$> (Point <$> pCoord <*> pCoord)
+
+pCurveCommand :: Get Command
+pCurveCommand = CmdCurve <$> (Point <$> pCoord <*> pCoord)
+                         <*> (Point <$> pCoord <*> pCoord)
+                         <*> (Point <$> pCoord <*> pCoord)
+
+pCommandList :: Get (Seq Command)
+pCommandList = do
+  pointCount <- getWord8
+  let cmdByteCount = (pointCount + 3) `div` 4
+  cmdBytes <- replicateM (fromIntegral cmdByteCount) getWord8
+  let go n
+        | n == fromIntegral pointCount = return S.empty
+        | otherwise =
+            let bIdx = n `div` 4
+                iIdx = (n `mod` 4) * 2
+            in case (cmdBytes !! bIdx) `shift` (negate iIdx) .&. 0x03 of
+                 0x00 ->
+                   (S.<|) <$> (CmdHLine <$> pCoord) <*> go (n+1)
+                 0x01 ->
+                   (S.<|) <$> (CmdVLine <$> pCoord) <*> go (n+1)
+                 0x02 ->
+                   (S.<|) <$> pLineCommand <*> go (n+1)
+                 0x03 ->
+                   (S.<|) <$> pCurveCommand <*> go (n+1)
+                 _ -> error "[unreachable]"
+  go 0
 
 pCoord :: Get Float
 pCoord = do
   b1 <- getWord8
   if testBit b1 7 then do
     b2 <- getWord8
-    let cVal :: Word16 = (clearBit 7 (fromIntegral b1) `shift` 8) .|. fromIntegral b2
-    return ((fromIntegral cVal / 102.0) - 128.0)
+    let cVal :: Word16 = (clearBit (fromIntegral b1) 7 `shift` 8) .|. fromIntegral b2
+    return (fromIntegral cVal / 102.0 - 128.0)
   else
     return (fromIntegral b1 - 32.0)
 
@@ -193,13 +232,23 @@ data Shape = Shape
   { shapeStyle :: StyleRef
   , shapePaths :: Seq PathRef
   , shapeFlags :: ShapeFlags
+  , shapeTransform :: Maybe Matrix
   } deriving (Eq, Show)
+
+type Matrix = Seq Float
 
 pShape :: Get Shape
 pShape = do
+  sType <- getWord8
+  when (sType /= 0x0a) $
+    fail ("Unknown shape type: " ++ show sType)
   shapeStyle <- StyleRef <$> get
   shapePaths <- getSeveral (PathRef <$> get)
   shapeFlags <- pShapeFlags
+  shapeTransform <-
+    if sfTransform shapeFlags
+      then Just <$> pMatrix
+      else return Nothing
   return Shape { .. }
 
 newtype PathRef = PathRef { prIdx :: Word8 } deriving (Eq, Show)
@@ -223,3 +272,13 @@ pShapeFlags = do
     , sfHasTransformers = testBit sFlags 4
     , sfTranslation     = testBit sFlags 5
     }
+
+pMatrix :: Get Matrix
+pMatrix = S.fromList `fmap` replicateM 6 pFloat
+
+pFloat :: Get Float
+pFloat = do
+  _ <- getWord8
+  _ <- getWord8
+  _ <- getWord8
+  return 0.0
