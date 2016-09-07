@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BinaryLiterals #-}
+{-# LANGUAGE MultiWayIf #-}
 
 module Graphics.HVIF
 (
@@ -23,6 +24,8 @@ module Graphics.HVIF
 , PathRef(..)
 , StyleRef(..)
 , ShapeFlags(..)
+, Translation(..)
+, LodScale(..)
 ) where
 
 import           Control.Monad (replicateM, when)
@@ -118,6 +121,9 @@ data Shape = Shape
   , shapePaths     :: Seq PathRef
   , shapeFlags     :: ShapeFlags
   , shapeTransform :: Maybe Matrix
+  , shapeTranslate :: Maybe Translation
+  , shapeLodScale  :: Maybe LodScale
+  , shapeTransList :: Seq Transformer
   } deriving (Eq, Show)
 
 type Matrix = Seq Float
@@ -133,6 +139,23 @@ data ShapeFlags = ShapeFlags
   , sfTranslation     :: Bool
   } deriving (Eq, Show)
 
+data Translation = Translation
+  { transX :: Float
+  , transY :: Float
+  } deriving (Eq, Show)
+
+data LodScale = LodScale
+  { lsMin :: Float
+  , lsMax :: Float
+  } deriving (Eq, Show)
+
+data Transformer
+  = TransformerAffine Matrix
+  | TransformerContour Float Word8 Word8
+  | TransformerPerspective -- Not fully supported, I think?
+  | TransformerStroke Float Word8 Word8 Word8
+    deriving (Eq, Show)
+
 -- Decoding code
 
 getSeveral :: Get a -> Get (Seq a)
@@ -144,7 +167,7 @@ pFile :: Get HVIFFile
 pFile = do
   header <- getByteString 4
   when (header /= "ncif") $
-    fail "Missing `ficn' header"
+    fail "Missing `ncif' header"
   hvifColors <- getSeveral pStyle
   hvifPaths  <- getSeveral pPath
   hvifShapes <- getSeveral pShape
@@ -161,7 +184,7 @@ pStyle = do
     0x03 -> ColorSolidNoAlpha <$> get <*> get <*> get
     0x04 -> ColorSolidGray <$> get <*> get
     0x05 -> ColorSolidGrayNoAlpha <$> get
-    _    -> fail "invalid"
+    _    -> getWord16be >> fail "invalid"
 
 pGradient :: Get Gradient
 pGradient = do
@@ -278,6 +301,10 @@ pCoord = do
   else
     return (fromIntegral b1 - 32.0)
 
+ifFlag :: Bool -> Get a -> Get (Maybe a)
+ifFlag True  m = Just <$> m
+ifFlag False _ = pure Nothing
+
 pShape :: Get Shape
 pShape = do
   sType <- getWord8
@@ -286,10 +313,13 @@ pShape = do
   shapeStyle <- StyleRef <$> get
   shapePaths <- getSeveral (PathRef <$> get)
   shapeFlags <- pShapeFlags
-  shapeTransform <-
-    if sfTransform shapeFlags
-      then Just <$> pMatrix
-      else return Nothing
+  shapeTransform <- ifFlag (sfTransform shapeFlags) $
+    pMatrix
+  shapeTranslate <- ifFlag (sfTranslation shapeFlags) $
+    Translation <$> pCoord <*> pCoord
+  shapeLodScale <- ifFlag (sfLodScale shapeFlags) $
+    pLodScale
+  shapeTransList <- getSeveral pTransformer
   return Shape { .. }
 
 pShapeFlags :: Get ShapeFlags
@@ -323,10 +353,38 @@ pFloat = do
     then return 0.0
     else castToFloat val
 
-
 castToFloat :: Word32 -> Get Float
 castToFloat w32 =
   let bs = encode w32
   in case runGet getFloat32be bs of
     Left err -> fail err
     Right x  -> return x
+
+pLodScale :: Get LodScale
+pLodScale = do
+  minS <- fromIntegral <$> getWord8
+  maxS <- fromIntegral <$> getWord8
+  return LodScale
+    { lsMin = minS / 63.75
+    , lsMax = maxS / 63.75
+    }
+
+pTransformer :: Get Transformer
+pTransformer = do
+  tType <- getWord8
+  case tType of
+    20 -> TransformerAffine <$> pMatrix
+    21 -> do
+      width      <- fromIntegral <$> getWord8
+      lineJoin   <- getWord8
+      miterLimit <- getWord8
+      return (TransformerContour (width - 128.0) lineJoin miterLimit)
+    22 -> pure TransformerPerspective
+    23 -> do
+      width <- fromIntegral <$> getWord8
+      lineOptions <- getWord8
+      miterLimit  <- getWord8
+      let lineJoin = lineOptions .&. 15
+          lineCap  = lineOptions `shift` 4
+      return (TransformerStroke (width - 128.0) lineJoin lineCap miterLimit)
+    _ -> fail ("Unknown transformer type: " ++ show tType)
