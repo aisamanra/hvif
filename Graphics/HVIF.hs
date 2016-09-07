@@ -128,8 +128,8 @@ data Shape = Shape
 
 type Matrix = Seq Float
 
-newtype PathRef = PathRef { prIdx :: Word8 } deriving (Eq, Show)
-newtype StyleRef = StyleRef { stIdx :: Word8 } deriving (Eq, Show)
+newtype PathRef = PathRef { prIdx :: Int } deriving (Eq, Show)
+newtype StyleRef = StyleRef { stIdx :: Int } deriving (Eq, Show)
 
 data ShapeFlags = ShapeFlags
   { sfTransform       :: Bool
@@ -310,8 +310,8 @@ pShape = do
   sType <- getWord8
   when (sType /= 0x0a) $
     fail ("Unknown shape type: " ++ show sType)
-  shapeStyle <- StyleRef <$> get
-  shapePaths <- getSeveral (PathRef <$> get)
+  shapeStyle <- StyleRef . fromIntegral <$> getWord8
+  shapePaths <- getSeveral ((PathRef . fromIntegral) <$> getWord8)
   shapeFlags <- pShapeFlags
   shapeTransform <- ifFlag (sfTransform shapeFlags) $
     pMatrix
@@ -319,7 +319,9 @@ pShape = do
     Translation <$> pCoord <*> pCoord
   shapeLodScale <- ifFlag (sfLodScale shapeFlags) $
     pLodScale
-  shapeTransList <- getSeveral pTransformer
+  shapeTransList <- if (sfHasTransformers shapeFlags)
+    then getSeveral pTransformer
+    else return S.empty
   return Shape { .. }
 
 pShapeFlags :: Get ShapeFlags
